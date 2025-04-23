@@ -1,16 +1,23 @@
-# This is a sample Python script.
+import google.generativeai as genai
+import os
+from dotenv import load_dotenv
 
-# Press Shift+F10 to execute it or replace it with your code.
-# Press Double Shift to search everywhere for classes, files, tool windows, actions, and settings.
+load_dotenv()
+api_key = os.getenv("GEMINI_API_KEY")  # Make sure this exists in your .env
 
+if not api_key:
+    raise ValueError("Missing GEMINI_API_KEY in .env")
 
-def print_hi(name):
-    # Use a breakpoint in the code line below to debug your script.
-    print(f'Hi, {name}')  # Press Ctrl+F8 to toggle the breakpoint.
+genai.configure(api_key=api_key)
 
+# Initialize model
+model = genai.GenerativeModel(model_name="gemini-2.0-flash")
 
-# Press the green button in the gutter to run the script.
-if __name__ == '__main__':
-    print_hi('PyCharm')
+# Send a request
+response = model.generate_content(
+    contents="Hello Gemini! Does your API integration work?",
+    generation_config={"temperature": 0.2, "max_output_tokens": 150}
+)
 
-# See PyCharm help at https://www.jetbrains.com/help/pycharm/
+# Print the result
+print("Gemini replies:", response.text)
