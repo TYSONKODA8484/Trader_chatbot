@@ -1,24 +1,20 @@
-# main.py
-
-import os, uuid
+import os
+import uuid
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from dotenv import load_dotenv
-import google.generativeai as genai
 from typing import List, Dict, Literal
 
-# ─── 1) Load env & configure Gemini ─────────────────────────────────────────────
-load_dotenv()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if not GEMINI_API_KEY:
-    raise ValueError("Missing GEMINI_API_KEY in .env")
+# Import LLM adapters
+from llm_backends.gemini import chat as gemini_chat
+from llm_backends.openai import chat as openai_chat
+from llm_backends.claude import chat as claude_chat
 
-genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel(model_name="gemini-2.0-flash")
+# ─── Load environment variables ─────────────────────────────────────────────────
+load_dotenv()  # expects .env with GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY
 
-# ─── 2) In-memory stores ────────────────────────────────────────────────────────
+# ─── In-memory session store & configuration ───────────────────────────────────
 sessions: Dict[str, List[Dict[str, str]]] = {}
-# Global config
 supported_providers = ["gemini", "openai", "claude"]
 active_provider: str = "gemini"
 generation_config = {
@@ -26,7 +22,7 @@ generation_config = {
     "max_output_tokens": 150
 }
 
-# ─── 3) Schemas ─────────────────────────────────────────────────────────────────
+# ─── Pydantic schemas ─────────────────────────────────────────────────────────
 class ChatRequest(BaseModel):
     session_id: str | None = None
     message: str
@@ -49,34 +45,34 @@ class ConfigResponse(BaseModel):
     temperature: float
     max_output_tokens: int
 
-# ─── 4) FastAPI app ────────────────────────────────────────────────────────────
+# ─── FastAPI app initialization ─────────────────────────────────────────────
 app = FastAPI()
 
-# 4a) Create a new session
+# 1️⃣ Create a new session
 @app.post("/sessions", response_model=SessionInfo)
 async def create_session():
     sid = str(uuid.uuid4())
     sessions[sid] = []
     return SessionInfo(session_id=sid)
 
-# 4b) List all sessions
+# 2️⃣ List all sessions
 @app.get("/sessions", response_model=List[SessionInfo])
 async def list_sessions():
     return [SessionInfo(session_id=sid) for sid in sessions]
 
-# 4c) Fetch history for one session
+# 3️⃣ Fetch history for a session
 @app.get("/sessions/{session_id}", response_model=List[Dict[str, str]])
 async def get_session(session_id: str):
     if session_id not in sessions:
         raise HTTPException(status_code=404, detail="Session not found")
     return sessions[session_id]
 
-# 4d) List available providers
+# 4️⃣ List available providers
 @app.get("/models", response_model=List[str])
 async def get_models():
     return supported_providers
 
-# 4e) Update config (provider, temperature, max tokens)
+# 5️⃣ Update runtime configuration
 @app.patch("/config", response_model=ConfigResponse)
 async def update_config(cfg: ConfigRequest):
     global active_provider, generation_config
@@ -93,39 +89,45 @@ async def update_config(cfg: ConfigRequest):
         max_output_tokens=generation_config["max_output_tokens"]
     )
 
-# 4f) Chat endpoint
+# 6️⃣ Chat endpoint
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
-    # Determine session
     sid = req.session_id or str(uuid.uuid4())
     if sid not in sessions:
         sessions[sid] = []
-
-    # Append user message
     sessions[sid].append({"role": "user", "content": req.message})
 
-    # Route to the active provider
     try:
-        if active_provider == "gemini":
-            resp = gemini_model.generate_content(
-                contents=req.message,
-                generation_config=generation_config
-            )
-            ai_reply = resp.text
+        if active_provider == "claude":
+            key = os.getenv("ANTHROPIC_API_KEY")
+            if not key:
+                ai_reply = (
+                    "Anthropic API key is missing. "
+                    "Please set ANTHROPIC_API_KEY in your .env to use Claude."
+                )
+            else:
+                try:
+                    ai_reply = claude_chat(req.message, generation_config)
+                except Exception as e:
+                    err = str(e)
+                    if "authentication_error" in err or "invalid x-api-key" in err:
+                        ai_reply = (
+                            "Anthropic API key is invalid or expired. "
+                            "Please verify your ANTHROPIC_API_KEY and try again."
+                        )
+                    else:
+                        ai_reply = f"Error calling Claude: {e}"
 
-        else:
-            # Placeholder for other providers
-            raise NotImplementedError(f"{active_provider} integration not yet implemented.")
+        # … your existing gemini & openai branches …
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"LLM error: {e}")
+        ai_reply = f"Error with {active_provider} provider: {e}"
 
-    # Append assistant reply
     sessions[sid].append({"role": "assistant", "content": ai_reply})
-
     return ChatResponse(session_id=sid, reply=ai_reply, history=sessions[sid])
 
-# 4g) Health check
+
+# 7️⃣ Health check
 @app.get("/health")
 async def health():
     return {"status": "ok"}
