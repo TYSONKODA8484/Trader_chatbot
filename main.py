@@ -1,6 +1,8 @@
 import os
 import uuid
+import asyncio
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from typing import List, Dict, Literal
@@ -9,20 +11,23 @@ from typing import List, Dict, Literal
 from llm_backends.gemini import chat as gemini_chat
 from llm_backends.openai import chat as openai_chat
 from llm_backends.claude import chat as claude_chat
+import google.generativeai as genai
 
-# ─── Load environment variables ─────────────────────────────────────────────────
-load_dotenv()  # expects .env with GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY
+# ─── Load environment ───
+load_dotenv()
 
-# ─── In-memory session store & configuration ───────────────────────────────────
-sessions: Dict[str, List[Dict[str, str]]] = {}
+# ─── Global state ───
+sessions: Dict[str, List[Dict[str, str]]] = {}  # session_id -> history
 supported_providers = ["gemini", "openai", "claude"]
-active_provider: str = "gemini"
+active_provider = "gemini"
 generation_config = {
     "temperature": 0.2,
     "max_output_tokens": 150
 }
 
-# ─── Pydantic schemas ─────────────────────────────────────────────────────────
+# ─── App ───
+app = FastAPI()
+
 class ChatRequest(BaseModel):
     session_id: str | None = None
     message: str
@@ -45,34 +50,24 @@ class ConfigResponse(BaseModel):
     temperature: float
     max_output_tokens: int
 
-# ─── FastAPI app initialization ─────────────────────────────────────────────
-app = FastAPI()
-
-# 1️⃣ Create a new session
 @app.post("/sessions", response_model=SessionInfo)
 async def create_session():
     sid = str(uuid.uuid4())
     sessions[sid] = []
     return SessionInfo(session_id=sid)
 
-# 2️⃣ List all sessions
-@app.get("/sessions", response_model=List[SessionInfo])
+@app.get("/sessions")
 async def list_sessions():
-    return [SessionInfo(session_id=sid) for sid in sessions]
+    return [
+        {"session_id": sid} for sid in sessions
+    ]
 
-# 3️⃣ Fetch history for a session
-@app.get("/sessions/{session_id}", response_model=List[Dict[str, str]])
+@app.get("/sessions/{session_id}")
 async def get_session(session_id: str):
     if session_id not in sessions:
         raise HTTPException(status_code=404, detail="Session not found")
-    return sessions[session_id]
+    return {"session_id": session_id, "history": sessions[session_id]}
 
-# 4️⃣ List available providers
-@app.get("/models", response_model=List[str])
-async def get_models():
-    return supported_providers
-
-# 5️⃣ Update runtime configuration
 @app.patch("/config", response_model=ConfigResponse)
 async def update_config(cfg: ConfigRequest):
     global active_provider, generation_config
@@ -89,36 +84,34 @@ async def update_config(cfg: ConfigRequest):
         max_output_tokens=generation_config["max_output_tokens"]
     )
 
-# 6️⃣ Chat endpoint
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
     sid = req.session_id or str(uuid.uuid4())
     if sid not in sessions:
         sessions[sid] = []
+
     sessions[sid].append({"role": "user", "content": req.message})
 
     try:
-        if active_provider == "claude":
-            key = os.getenv("ANTHROPIC_API_KEY")
-            if not key:
-                ai_reply = (
-                    "Anthropic API key is missing. "
-                    "Please set ANTHROPIC_API_KEY in your .env to use Claude."
-                )
+        if active_provider == "gemini":
+            if not os.getenv("GEMINI_API_KEY"):
+                ai_reply = "Gemini API key missing. Please set it in .env"
             else:
-                try:
-                    ai_reply = claude_chat(req.message, generation_config)
-                except Exception as e:
-                    err = str(e)
-                    if "authentication_error" in err or "invalid x-api-key" in err:
-                        ai_reply = (
-                            "Anthropic API key is invalid or expired. "
-                            "Please verify your ANTHROPIC_API_KEY and try again."
-                        )
-                    else:
-                        ai_reply = f"Error calling Claude: {e}"
+                ai_reply = gemini_chat(req.message, generation_config)
 
-        # … your existing gemini & openai branches …
+        elif active_provider == "openai":
+            if not os.getenv("OPENAI_API_KEY"):
+                ai_reply = "OpenAI API key missing. Please set it in .env"
+            else:
+                ai_reply = openai_chat(req.message, generation_config)
+
+        elif active_provider == "claude":
+            if not os.getenv("ANTHROPIC_API_KEY"):
+                ai_reply = "Anthropic API key missing. Please set it in .env"
+            else:
+                ai_reply = claude_chat(req.message, generation_config)
+        else:
+            ai_reply = "Unsupported provider."
 
     except Exception as e:
         ai_reply = f"Error with {active_provider} provider: {e}"
@@ -126,8 +119,34 @@ async def chat(req: ChatRequest):
     sessions[sid].append({"role": "assistant", "content": ai_reply})
     return ChatResponse(session_id=sid, reply=ai_reply, history=sessions[sid])
 
+@app.post("/chat/stream")
+async def stream_chat(req: ChatRequest):
+    sid = req.session_id or str(uuid.uuid4())
+    if sid not in sessions:
+        sessions[sid] = []
 
-# 7️⃣ Health check
+    sessions[sid].append({"role": "user", "content": req.message})
+
+    def format_event(data):
+        return f"data: {data}\n\n"
+
+    async def token_stream():
+        yield format_event("[thinking...]")
+        response = genai.GenerativeModel("gemini-2.0-flash").generate_content(
+            contents=req.message,
+            generation_config=generation_config,
+            stream=True
+        )
+        full_text = ""
+        async for chunk in response:
+            part = chunk.text
+            full_text += part
+            yield format_event(part)
+            await asyncio.sleep(0.01)
+        sessions[sid].append({"role": "assistant", "content": full_text})
+
+    return StreamingResponse(token_stream(), media_type="text/event-stream")
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
