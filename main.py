@@ -1,152 +1,148 @@
-import os
-import uuid
-import asyncio
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
-from dotenv import load_dotenv
-from typing import List, Dict, Literal
-
-# Import LLM adapters
-from llm_backends.gemini import chat as gemini_chat
-from llm_backends.openai import chat as openai_chat
-from llm_backends.claude import chat as claude_chat
+from flask import Flask, request, jsonify, session
+from flask_session import Session
+from flask_cors import CORS
 import google.generativeai as genai
+from PIL import Image, UnidentifiedImageError
+import io
+from dotenv import load_dotenv
+import os
+import secrets
 
-# ─── Load environment ───
+# --- Load Environment ---
 load_dotenv()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel("gemini-2.0-flash")
 
-# ─── Global state ───
-sessions: Dict[str, List[Dict[str, str]]] = {}  # session_id -> history
-supported_providers = ["gemini", "openai", "claude"]
-active_provider = "gemini"
-generation_config = {
-    "temperature": 0.2,
-    "max_output_tokens": 150
-}
+# --- App Setup ---
+app = Flask(__name__)
+app.secret_key = secrets.token_hex(16)
+app.config["SESSION_TYPE"] = "filesystem"
+app.config["SESSION_FILE_DIR"] = "./flask_session_dir"
+app.config["SESSION_PERMANENT"] = False
+Session(app)
+CORS(app, supports_credentials=True)
 
-# ─── App ───
-app = FastAPI()
+# --- Global Memory ---
+History = []
 
-class ChatRequest(BaseModel):
-    session_id: str | None = None
-    message: str
+def get_chat_history():
+    if "history" not in session:
+        session["history"] = []
+    return History
 
-class ChatResponse(BaseModel):
-    session_id: str
-    reply: str
-    history: List[Dict[str, str]]
+def add_to_history(user_msg, bot_msg):
+    History.append({"user": user_msg, "bot": bot_msg})
+    history = get_chat_history()
+    history.append({"user": user_msg, "bot": bot_msg})
+    session["history"] = history
+    session["last_question"] = user_msg
 
-class SessionInfo(BaseModel):
-    session_id: str
-
-class ConfigRequest(BaseModel):
-    provider: Literal["gemini","openai","claude"]
-    temperature: float | None = None
-    max_output_tokens: int | None = None
-
-class ConfigResponse(BaseModel):
-    provider: str
-    temperature: float
-    max_output_tokens: int
-
-@app.post("/sessions", response_model=SessionInfo)
-async def create_session():
-    sid = str(uuid.uuid4())
-    sessions[sid] = []
-    return SessionInfo(session_id=sid)
-
-@app.get("/sessions")
-async def list_sessions():
-    return [
-        {"session_id": sid} for sid in sessions
-    ]
-
-@app.get("/sessions/{session_id}")
-async def get_session(session_id: str):
-    if session_id not in sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
-    return {"session_id": session_id, "history": sessions[session_id]}
-
-@app.patch("/config", response_model=ConfigResponse)
-async def update_config(cfg: ConfigRequest):
-    global active_provider, generation_config
-    if cfg.provider not in supported_providers:
-        raise HTTPException(status_code=400, detail="Unsupported provider")
-    active_provider = cfg.provider
-    if cfg.temperature is not None:
-        generation_config["temperature"] = cfg.temperature
-    if cfg.max_output_tokens is not None:
-        generation_config["max_output_tokens"] = cfg.max_output_tokens
-    return ConfigResponse(
-        provider=active_provider,
-        temperature=generation_config["temperature"],
-        max_output_tokens=generation_config["max_output_tokens"]
+# --- Location Extraction --- (Optional for Agent 2)
+def extract_location(text):
+    history_prompt = "\n".join([f"User: {m['user']}\nBot: {m['bot']}" for m in get_chat_history()])
+    prompt = (
+        "You are a location extractor for a finance assistant chatbot.\\n"
+        "Extract the city or region the user is talking about based on the current message and previous conversations.\\n"
+        "If unclear, return 'unknown'.\\n"
+        f"Chat history:\n{history_prompt}\nUser: {text}"
     )
-
-@app.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest):
-    sid = req.session_id or str(uuid.uuid4())
-    if sid not in sessions:
-        sessions[sid] = []
-
-    sessions[sid].append({"role": "user", "content": req.message})
-
     try:
-        if active_provider == "gemini":
-            if not os.getenv("GEMINI_API_KEY"):
-                ai_reply = "Gemini API key missing. Please set it in .env"
-            else:
-                ai_reply = gemini_chat(req.message, generation_config)
+        response = model.generate_content(prompt)
+        location = response.text.strip().split("\n")[0]
+        return location if location.lower() != "unknown" else None
+    except:
+        return None
 
-        elif active_provider == "openai":
-            if not os.getenv("OPENAI_API_KEY"):
-                ai_reply = "OpenAI API key missing. Please set it in .env"
-            else:
-                ai_reply = openai_chat(req.message, generation_config)
 
-        elif active_provider == "claude":
-            if not os.getenv("ANTHROPIC_API_KEY"):
-                ai_reply = "Anthropic API key missing. Please set it in .env"
-            else:
-                ai_reply = claude_chat(req.message, generation_config)
-        else:
-            ai_reply = "Unsupported provider."
-
+# --- Agent 1: Strategy Advisor ---
+def agent_strategy_advice(prompt_text):
+    history_prompt = "\n".join([f"User: {m['user']}\nBot: {m['bot']}" for m in get_chat_history()])
+    full_prompt = (
+        "You are a trading strategy assistant helping a user with queries.\\n"
+        "Use context, prior prompts, and logic to suggest trading strategies based on market conditions.\\n"
+        "Keep the advice clear, concise, and within 700 characters.\\n"
+        f"{history_prompt}\\nUser: {prompt_text}"
+    )
+    try:
+        response = model.generate_content(full_prompt, generation_config={"max_output_tokens": 250})
+        reply = response.text.strip()[:700]
+        add_to_history(prompt_text, reply)
+        return reply
     except Exception as e:
-        ai_reply = f"Error with {active_provider} provider: {e}"
+        return f"Error: {e}"
 
-    sessions[sid].append({"role": "assistant", "content": ai_reply})
-    return ChatResponse(session_id=sid, reply=ai_reply, history=sessions[sid])
 
-@app.post("/chat/stream")
-async def stream_chat(req: ChatRequest):
-    sid = req.session_id or str(uuid.uuid4())
-    if sid not in sessions:
-        sessions[sid] = []
+# --- Agent 2: Financial FAQ Handler ---
+def agent_faq_handler(question, user_location):
+    history_prompt = "\n".join([f"User: {m['user']}\nBot: {m['bot']}" for m in get_chat_history()])
+    location_note = f"User location: {user_location}\n" if user_location else ""
+    prompt = (
+        "You are a finance knowledge assistant for investors and traders.\\n"
+        "Answer the user's questions based on context and their location if relevant.\\n"
+        "Provide concise and informative responses in under 700 characters.\\n"
+        f"{location_note}{history_prompt}\\nUser: {question}"
+    )
+    try:
+        response = model.generate_content(prompt, generation_config={"max_output_tokens": 250})
+        reply = response.text.strip()[:700]
+        add_to_history(question, reply)
+        return reply
+    except Exception as e:
+        return f"Error: {e}"
 
-    sessions[sid].append({"role": "user", "content": req.message})
 
-    def format_event(data):
-        return f"data: {data}\n\n"
+# --- Intent Classifier (LLM) ---
+def classify_intent(text):
+    prompt = (
+        "You are an intent classifier for a trading assistant.\\n"
+        "Classify the user query as one of the following types:\\n"
+        "- 'strategy': for queries asking about trading ideas, risk, indicators, strategies, etc.\\n"
+        "- 'faq': for general questions about finance, regulations, market basics, tax laws, etc.\\n"
+        "Return only one word: 'strategy' or 'faq'.\\n"
+        f"User: {text}"
+    )
+    try:
+        response = model.generate_content(prompt)
+        return response.text.strip().lower()
+    except Exception as e:
+        return "faq"  # Default to 'faq' in case of any error
 
-    async def token_stream():
-        yield format_event("[thinking...]")
-        response = genai.GenerativeModel("gemini-2.0-flash").generate_content(
-            contents=req.message,
-            generation_config=generation_config,
-            stream=True
-        )
-        full_text = ""
-        async for chunk in response:
-            part = chunk.text
-            full_text += part
-            yield format_event(part)
-            await asyncio.sleep(0.01)
-        sessions[sid].append({"role": "assistant", "content": full_text})
 
-    return StreamingResponse(token_stream(), media_type="text/event-stream")
+# --- Router ---
+def agent_router(text="", image_bytes=None, user_location=None):
+    has_image = image_bytes is not None
 
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
+    # Use the classify_intent function to determine the type of query (strategy or faq)
+    intent = classify_intent(text)
+    session["last_intent"] = intent
+    session["last_question"] = text
+
+    if intent == "strategy":
+        return agent_strategy_advice(text)
+    elif intent == "faq":
+        return agent_faq_handler(text, user_location)
+    else:
+        return "Could you clarify if this is a strategy question or a general finance FAQ?"
+
+
+# --- Chat Endpoint ---
+@app.route("/chat", methods=["POST"])
+def chat():
+    text = request.form.get("text", "")
+    if not text:
+        return jsonify({"reply": "Please enter a query."})
+
+    reply = agent_router(text)
+    return jsonify({"reply": reply})
+
+# --- Reset Session ---
+@app.route("/reset", methods=["POST"])
+def reset():
+    global History
+    History = []
+    session.clear()
+    return jsonify({"status": "Session cleared."})
+
+if __name__ == "__main__":
+    app.run(debug=True, port=5000)

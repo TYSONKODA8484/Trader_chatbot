@@ -1,9 +1,0 @@
-fastapi
-uvicorn
-python-dotenv
-google-generativeai
-openai
-anthropic
-gradio
-requests
-streamlit
