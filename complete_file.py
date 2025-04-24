@@ -2,19 +2,21 @@ from flask import Flask, request, jsonify, session
 from flask_session import Session
 from flask_cors import CORS
 import google.generativeai as genai
-import openai
-import os
-import secrets
-from dotenv import load_dotenv
 from PIL import Image, UnidentifiedImageError
 import io
 import PyPDF2
 import pandas as pd
+from dotenv import load_dotenv
+import os
+import secrets
 
 # --- Load Environment ---
 load_dotenv()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel("gemini-2.0-flash")
 
-# --- Initialize Flask App ---
+# --- App Setup ---
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(16)
 app.config["SESSION_TYPE"] = "filesystem"
@@ -26,13 +28,12 @@ CORS(app, supports_credentials=True)
 # --- Global Memory ---
 History = []
 
-# Set default model (Google Gemini)
-current_model = "gemini"
 
 def get_chat_history():
     if "history" not in session:
         session["history"] = []
     return History
+
 
 def add_to_history(user_msg, bot_msg):
     History.append({"user": user_msg, "bot": bot_msg})
@@ -41,83 +42,86 @@ def add_to_history(user_msg, bot_msg):
     session["history"] = history
     session["last_question"] = user_msg
 
-# --- Model Configuration and Switching ---
-def set_model(model_name):
-    global current_model
-    if model_name == "gemini":
-        GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-        if not GEMINI_API_KEY:
-            return "API key for Google Gemini is missing. Please provide the API key in the environment variables."
-        genai.configure(api_key=GEMINI_API_KEY)
-        current_model = "gemini"
-    elif model_name == "openai":
-        OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-        if not OPENAI_API_KEY:
-            return "API key for OpenAI is missing. Please provide the API key in the environment variables."
-        openai.api_key = OPENAI_API_KEY
-        current_model = "openai"
-    elif model_name == "claude":
-        CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY")
-        if not CLAUDE_API_KEY:
-            return "API key for Anthropic Claude is missing. Please provide the API key in the environment variables."
-        current_model = "claude"
-    else:
-        return "Invalid model selected. Choose 'gemini', 'openai', or 'claude'."
-    return f"Model switched to {model_name.capitalize()} successfully!"
 
-# --- Model API Integration ---
-def generate_with_gemini(prompt):
+# --- Location Extraction --- (Optional for Agent 2)
+def extract_location(text):
+    history_prompt = "\n".join([f"User: {m['user']}\nBot: {m['bot']}" for m in get_chat_history()])
+    prompt = (
+        "You are a location extractor for a finance assistant chatbot.\\n"
+        "Extract the city or region the user is talking about based on the current message and previous conversations.\\n"
+        "If unclear, return 'unknown'.\\n"
+        f"Chat history:\n{history_prompt}\nUser: {text}"
+    )
     try:
-        response = genai.GenerativeModel("gemini-2.0-flash").generate_content(prompt)
-        return response.text.strip()
-    except Exception as e:
-        return f"Error with Gemini model: {e}"
+        response = model.generate_content(prompt)
+        location = response.text.strip().split("\n")[0]
+        return location if location.lower() != "unknown" else None
+    except:
+        return None
 
-def generate_with_openai(prompt):
-    try:
-        response = openai.Completion.create(
-            engine="text-davinci-003",  # or "gpt-3.5-turbo", "gpt-4" based on model
-            prompt=prompt,
-            max_tokens=150,
-            n=1,
-            stop=None,
-            temperature=0.7,
-        )
-        return response.choices[0].text.strip()
-    except Exception as e:
-        return f"Error with OpenAI model: {e}"
-
-def generate_with_claude(prompt):
-    try:
-        # Add actual implementation for Claude API here
-        # For now, it’s a placeholder as you don’t have the API key
-        return "Claude model response (not implemented due to missing API key)."
-    except Exception as e:
-        return f"Error with Claude model: {e}"
-
-# --- Select Model API Endpoint ---
-@app.route("/select_model", methods=["POST"])
-def select_model():
-    model_name = request.json.get("model_name", "").lower()
-    result = set_model(model_name)
-    return jsonify({"status": result})
 
 # --- Agent 1: Strategy Advisor ---
 def agent_trademaster(prompt_text, user_location=None, image_bytes=None):
+    """
+    Unified agent to handle all trading-related queries, including strategies, sentiment, portfolio management, etc.
+    """
+    # 1. Gather conversation history
     history_prompt = "\n".join([f"User: {m['user']}\nBot: {m['bot']}" for m in get_chat_history()])
 
-    # Generate model-specific response
-    if current_model == "gemini":
-        response = generate_with_gemini(f"{history_prompt}\nUser: {prompt_text}")
-    elif current_model == "openai":
-        response = generate_with_openai(f"{history_prompt}\nUser: {prompt_text}")
-    elif current_model == "claude":
-        response = generate_with_claude(f"{history_prompt}\nUser: {prompt_text}")
-    else:
-        response = "Please select a valid model."
+    # 2. Classify the user's query (using LLM or simple classification)
+    intent = classify_intent(
+        prompt_text)  # This should classify between 'strategy', 'faq', 'sentiment', 'portfolio', etc.
 
-    add_to_history(prompt_text, response)
-    return response
+    # 3. Dynamically handle the response based on the query intent
+    if intent == "strategy":
+        # Trading strategy-related response
+        full_prompt = (
+            "You are a trading strategy assistant helping a user with queries.\\n"
+            "Use context, prior prompts, and logic to suggest trading strategies based on market conditions.\\n"
+            "Keep the advice clear, concise, and within 700 characters.\\n"
+            f"{history_prompt}\\nUser: {prompt_text}"
+        )
+        return handle_trading_strategy(full_prompt)
+
+    elif intent == "faq":
+        # Pass the query to the existing FAQ agent for handling finance-related queries
+        return agent_faq_handler(prompt_text, user_location)
+
+    elif intent == "sentiment":
+        # Perform sentiment analysis
+        return sentiment_analysis(prompt_text)
+
+    elif intent == "portfolio":
+        # Handle portfolio-related queries
+        return portfolio_management(prompt_text)
+
+    elif intent == "tax":
+        # Provide tax-related advice
+        return tax_advisor(prompt_text, user_location)
+
+    elif intent == "risk":
+        # Provide risk management advice
+        return risk_management(prompt_text)
+
+    elif intent == "algo":
+        # Handle algorithmic trading-related queries
+        return algorithmic_trading(prompt_text)
+
+    else:
+        return "Could you clarify your request? I can assist with trading strategies, portfolio management, tax advice, etc."
+
+
+# --- Helper functions for each intent type ---
+def handle_trading_strategy(full_prompt):
+    try:
+        # Query LLM to generate the strategy advice
+        response = model.generate_content(full_prompt, generation_config={"max_output_tokens": 250})
+        reply = response.text.strip()[:700]
+        add_to_history(full_prompt, reply)
+        return reply
+    except Exception as e:
+        return f"Error generating strategy advice: {e}"
+
 
 # --- Agent 2: Financial FAQ Handler ---
 def agent_faq_handler(question, user_location):
@@ -129,19 +133,14 @@ def agent_faq_handler(question, user_location):
         "Provide concise and informative responses in under 700 characters.\\n"
         f"{location_note}{history_prompt}\\nUser: {question}"
     )
+    try:
+        response = model.generate_content(prompt, generation_config={"max_output_tokens": 250})
+        reply = response.text.strip()[:700]
+        add_to_history(question, reply)
+        return reply
+    except Exception as e:
+        return f"Error: {e}"
 
-    # Generate model-specific response
-    if current_model == "gemini":
-        response = generate_with_gemini(prompt)
-    elif current_model == "openai":
-        response = generate_with_openai(prompt)
-    elif current_model == "claude":
-        response = generate_with_claude(prompt)
-    else:
-        response = "Please select a valid model."
-
-    add_to_history(question, response)
-    return response
 
 # --- Image Analysis Agent (Agent 1) ---
 def agent_image_analysis(image_bytes, text_query=""):
@@ -168,6 +167,7 @@ def agent_image_analysis(image_bytes, text_query=""):
     except Exception as e:
         return f"Error: {e}"
 
+
 # Sample helper function for chart analysis (custom logic needed)
 def analyze_chart(image):
     """
@@ -178,6 +178,7 @@ def analyze_chart(image):
         "trend": "bullish",  # Could be 'bullish', 'bearish', or 'neutral'
         "prediction": "The price is likely to go up in the near term."
     }
+
 
 # --- Agent 4: PDF Extraction Agent ---
 def agent_pdf_extraction(pdf_bytes, query=""):
@@ -208,6 +209,7 @@ def extract_data_from_pdf(text, query):
         return "The EPS for Q4 2022 is $3.50."
     else:
         return "Sorry, I couldn't find that information in the PDF."
+
 
 # --- Agent 5: CSV Analysis Agent ---
 def agent_csv_analysis(csv_bytes, query=""):
@@ -258,6 +260,7 @@ def analyze_portfolio(csv_data):
     except KeyError:
         return "Error: The CSV is missing required columns ('shares', 'current_price')."
 
+
 # --- Intent Classifier (LLM) ---
 def classify_intent(text):
     prompt = (
@@ -272,20 +275,25 @@ def classify_intent(text):
         f"User: {text}"
     )
     try:
-        response = generate_with_gemini(prompt)  # Default model, can be switched
-        return response.strip().lower()
+        response = model.generate_content(prompt)
+        return response.text.strip().lower()
     except Exception as e:
         return "faq"  # Default to 'faq' in case of any error
 
+
 # --- Router ---
 def agent_router(text="", image_bytes=None, pdf_bytes=None, csv_bytes=None, user_location=None):
+    # If an image is provided, directly route it to the Image Analysis Agent
     if image_bytes:
+        # Call the image analysis agent directly and bypass intent classification
         return agent_image_analysis(image_bytes, text)
 
+    # If no image, classify the intent for text queries
     intent = classify_intent(text)
     session["last_intent"] = intent
     session["last_question"] = text
 
+    # Handling the query based on classified intent
     if intent == "strategy":
         return agent_trademaster(text)
     elif intent == "faq":
@@ -297,7 +305,7 @@ def agent_router(text="", image_bytes=None, pdf_bytes=None, csv_bytes=None, user
     elif intent == "csv" and csv_bytes:
         return agent_csv_analysis(csv_bytes, text)
     else:
-        return "Could you clarify your request?"
+        return "Could you clarify if this is a strategy, FAQ, image, PDF, or CSV query?"
 
 # --- Chat Endpoint ---
 @app.route("/chat", methods=["POST"])
@@ -308,12 +316,15 @@ def chat():
     csv_file = request.files.get("csv")
     user_location = request.form.get("location")
 
+    # Process files based on intent and route them accordingly
     image_bytes = image_file.read() if image_file else None
     pdf_bytes = pdf_file.read() if pdf_file else None
     csv_bytes = csv_file.read() if csv_file else None
 
+    # Handle the query and get the appropriate response
     reply = agent_router(text, image_bytes, pdf_bytes, csv_bytes, user_location)
     return jsonify({"reply": reply})
+
 
 # --- Reset Session ---
 @app.route("/reset", methods=["POST"])
@@ -322,6 +333,7 @@ def reset():
     History = []
     session.clear()
     return jsonify({"status": "Session cleared."})
+
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)

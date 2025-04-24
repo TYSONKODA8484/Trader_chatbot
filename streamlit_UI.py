@@ -9,13 +9,29 @@ st.title("💹 Trading Assistant Chatbot")
 
 API_URL = "http://127.0.0.1:5000/chat"  # Make sure this points to your Flask API
 RESET_URL = "http://127.0.0.1:5000/reset"
+MODEL_SELECTION_URL = "http://127.0.0.1:5000/select_model"  # Endpoint for switching models
 
-# Initialize session state for chat history
+# Initialize session state for chat history and model selection
 if "history" not in st.session_state:
     st.session_state.history = []
 
-# Sidebar Reset Button
+if "model" not in st.session_state:
+    st.session_state.model = "gemini"  # Default model
+
+# Sidebar to select model
 with st.sidebar:
+    st.header("Model Selection")
+    model_choice = st.selectbox("Choose LLM Model", ["Google Gemini", "OpenAI GPT", "Anthropic Claude"])
+    if st.button("Switch Model"):
+        model_mapping = {
+            "Google Gemini": "gemini",
+            "OpenAI GPT": "openai",
+            "Anthropic Claude": "claude"
+        }
+        model_response = requests.post(MODEL_SELECTION_URL, json={"model_name": model_mapping[model_choice]})
+        model_status = model_response.json().get("status", "Model change failed.")
+        st.success(model_status)
+
     if st.button("🔁 Reset Conversation"):
         requests.post(RESET_URL)
         st.session_state.history.clear()
@@ -57,7 +73,7 @@ if submitted:
         "pdf": (uploaded_pdf.name, uploaded_pdf, uploaded_pdf.type) if uploaded_pdf else None,
         "csv": (uploaded_csv.name, uploaded_csv, uploaded_csv.type) if uploaded_csv else None
     }
-    data = {"text": text, "location": location}
+    data = {"text": text, "location": location, "model": st.session_state.model}
 
     try:
         # Send the request to the Trading Assistant Flask API
@@ -69,5 +85,5 @@ if submitted:
     # Save the user message and bot reply to chat history
     st.session_state.history.append({"user": text or "(image/pdf/csv only)", "bot": bot_reply})
 
-    # Refresh the chat UI
+    # Refresh the chat Frontend
     st.rerun()
