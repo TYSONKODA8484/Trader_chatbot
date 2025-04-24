@@ -160,12 +160,6 @@ The Trademate AI project relies on the following environment variables to secure
 * `OPENAI_API_KEY`: Your unique API key for accessing the OpenAI models (e.g., GPT).
 * `CLAUDE_API_KEY`: Your unique API key for accessing the Anthropic Claude models.
 
-**Example `.env` file:**
-
-GEMINI_API_KEY=YOUR_GOOGLE_GEMINI_API_KEY_HERE
-OPENAI_API_KEY=YOUR_OPENAI_API_KEY_HERE
-CLAUDE_API_KEY=YOUR_ANTHROPIC_CLAUDE_API_KEY_HERE
-
 ## Troubleshooting
 
 This section provides solutions to common issues you might encounter.
