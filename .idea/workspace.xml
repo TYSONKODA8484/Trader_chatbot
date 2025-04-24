@@ -5,25 +5,10 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="1befa059-480b-4975-8de6-0d4143a171e6" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/app.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/.gitignore" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/vcs.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/UI/Gradio.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/UI/streamlit_ui.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/agent_router.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/base.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/compare_agent.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/gemini_agent.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/pdf_agent.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/price_agent.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/risk_agent.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/summary_agent.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/vision_agent.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/llm_backends/gemini.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app.py" beforeDir="false" afterPath="$PROJECT_DIR$/app.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/flask_session_dir/2029240f6d1128be89ddc32729463129" beforeDir="false" afterPath="$PROJECT_DIR$/flask_session_dir/2029240f6d1128be89ddc32729463129" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/requirements.txt" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/test.py" beforeDir="false" afterPath="$PROJECT_DIR$/test.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -70,7 +55,7 @@
       <option name="presentableId" value="Default" />
       <updated>1745488164868</updated>
       <workItem from="1745488165969" duration="2000" />
-      <workItem from="1745488184339" duration="2113000" />
+      <workItem from="1745488184339" duration="4230000" />
     </task>
     <servers />
   </component>
